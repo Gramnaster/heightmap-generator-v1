@@ -115,20 +115,18 @@ fn ridgedNoise(pos : vec2f, octaves : i32) -> f32 {
 /*  Main compute entry                                                */
 /* ================================================================== */
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid : vec3u) {
-  let idx = gid.x;
-  let total = arrayLength(&heightmapIn);
-  if (idx >= total) {
+  let px = gid.x;
+  let py = gid.y;
+  let w  = params.width;
+  let h  = params.height;
+  if (px >= w || py >= h) {
     return;
   }
 
+  let idx = py * w + px;
   let painted = heightmapIn[idx];
-
-  // ── Convert flat index → 2D UV ──────────────────────────────────
-  let w  = params.width;
-  let px = idx % w;
-  let py = idx / w;
   // UV in 0..1, then scale to a nice noise frequency.
   let uv = vec2f(f32(px), f32(py)) / vec2f(f32(w), f32(params.height));
   let noiseCoord = uv * 8.0;   // tile frequency – tweak to taste
@@ -290,8 +288,9 @@ export async function runHeightmapCompute(
     ],
   });
 
-  const workgroupSize = 256;
-  const workgroupCount = Math.ceil(pixelCount / workgroupSize);
+  const wgSize = 16;
+  const workgroupsX = Math.ceil(canvasWidth / wgSize);
+  const workgroupsY = Math.ceil(canvasHeight / wgSize);
 
   const encoder = device.createCommandEncoder({
     label: "heightmap-compute-encoder",
@@ -299,7 +298,7 @@ export async function runHeightmapCompute(
   const pass = encoder.beginComputePass({ label: "heightmap-compute-pass" });
   pass.setPipeline(computePipeline);
   pass.setBindGroup(0, bindGroup);
-  pass.dispatchWorkgroups(workgroupCount);
+  pass.dispatchWorkgroups(workgroupsX, workgroupsY);
   pass.end();
 
   device.queue.submit([encoder.finish()]);
@@ -312,7 +311,7 @@ export async function runHeightmapCompute(
   uniformBuffer.destroy();
 
   console.log(
-    `[HeightmapCompute] Dispatched ${workgroupCount} workgroups ` +
+    `[HeightmapCompute] Dispatched ${workgroupsX}×${workgroupsY} workgroups ` +
       `(${pixelCount} pixels, ${(byteSize / 1024 / 1024).toFixed(1)} MB).`,
   );
 
