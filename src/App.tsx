@@ -18,7 +18,7 @@ function App() {
 
   const [brushSize, setBrushSize] = useState(64);
   const [brushSoftness, setBrushSoftness] = useState(0.5);
-  const [brushColor, setBrushColor] = useState(255);
+  const [brushColor, setBrushColor] = useState(150);
 
   const brush: BrushSettings = useMemo(
     () => ({ size: brushSize, softness: brushSoftness, color: brushColor }),
