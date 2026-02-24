@@ -6,6 +6,8 @@ interface ToolbarProps {
   brushColor: number;
   setBrushColor: (v: number) => void;
   onClear: () => void;
+  onGenerate3D: () => void;
+  isGenerating: boolean;
 }
 
 /**
@@ -21,6 +23,8 @@ export function Toolbar({
   brushColor,
   setBrushColor,
   onClear,
+  onGenerate3D,
+  isGenerating,
 }: ToolbarProps) {
   const grayHex = brushColor.toString(16).padStart(2, "0");
   const swatchColor = `#${grayHex}${grayHex}${grayHex}`;
@@ -78,6 +82,13 @@ export function Toolbar({
       <hr className="toolbar-divider" />
       <button className="toolbar-btn" onClick={onClear}>
         Clear Canvas
+      </button>
+      <button
+        className="toolbar-btn toolbar-btn--primary"
+        onClick={onGenerate3D}
+        disabled={isGenerating}
+      >
+        {isGenerating ? "Generating…" : "Generate 3D"}
       </button>
     </aside>
   );
