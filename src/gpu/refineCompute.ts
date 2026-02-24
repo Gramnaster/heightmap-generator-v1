@@ -13,10 +13,11 @@ import { extractHeightmap } from "./extractHeightmap";
  *   2.  Noise‑based edge warp   – perturbs the boundary between
  *                                  land (bright) and sea (dark) so
  *                                  coastlines look organic.
- *   3.  Contrast S‑curve        – pushes values toward black or white
- *                                  for a crisp monochrome result
- *                                  while preserving mid‑tone gradients
- *                                  needed for mountain slopes.
+ *   3.  Coastline contrast      – sharpens ONLY the land/sea border
+ *                                  (the near‑zero boundary) so the
+ *                                  coast snaps to black or the terrain
+ *                                  value.  Interior terrain (all gray
+ *                                  levels) is fully preserved.
  *   4.  Mountain sharpening     – enhances local contrast on brighter
  *                                  pixels so mountain ridges pop.
  *
@@ -45,7 +46,6 @@ fn sampleClamped(x : i32, y : i32) -> f32 {
   return heightmapIn[u32(cy) * params.width + u32(cx)];
 }
 
-// Hash for noise perturbation.
 fn hash2(p : vec2f) -> f32 {
   var q = fract(p * vec2f(123.34, 456.21));
   q = q + dot(q, q + 45.32);
@@ -68,21 +68,16 @@ fn valueNoise(p : vec2f) -> f32 {
 
 /* ================================================================== */
 /*  Gaussian blur 7×7 (σ ≈ 2.0)                                      */
-/*                                                                    */
-/*  Pre‑computed kernel weights (normalised to sum to 1).             */
 /* ================================================================== */
 
 fn gaussianBlur(px : i32, py : i32) -> f32 {
-  // Kernel radius = 3  →  7×7 tap neighbourhood.
-  // Weights computed from exp( ‑(x²+y²)/(2·σ²) ) with σ = 2.0.
-  // We compute directly in 2D (49 taps is fine at @workgroup_size 16×16).
   var total  = 0.0;
   var weight = 0.0;
 
   for (var dy = -3; dy <= 3; dy = dy + 1) {
     for (var dx = -3; dx <= 3; dx = dx + 1) {
       let d2 = f32(dx * dx + dy * dy);
-      let w  = exp(-d2 / 8.0);          // 2·σ² = 8.0
+      let w  = exp(-d2 / 8.0);
       total  = total + sampleClamped(px + dx, py + dy) * w;
       weight = weight + w;
     }
@@ -91,11 +86,7 @@ fn gaussianBlur(px : i32, py : i32) -> f32 {
 }
 
 /* ================================================================== */
-/*  Noise‑based edge perturbation                                     */
-/*                                                                    */
-/*  Detects edges (gradient magnitude) and shifts the sampling coord  */
-/*  by a noise offset.  This breaks up perfectly round brush edges    */
-/*  into natural coastline‑like contours.                             */
+/*  Edge detection + noise perturbation                               */
 /* ================================================================== */
 
 fn gradientMagnitude(px : i32, py : i32) -> f32 {
@@ -112,44 +103,40 @@ fn perturbedSample(px : i32, py : i32) -> f32 {
   let uv = vec2f(f32(px), f32(py)) / vec2f(f32(params.width), f32(params.height));
   let edge = gradientMagnitude(px, py);
 
-  // Noise‑based 2D offset, strength proportional to edge strength.
   let noiseFreq = 12.0;
-  let maxShift  = 8.0;   // max pixel displacement at sharpest edges
-  let nx = (valueNoise(uv * noiseFreq)                          * 2.0 - 1.0) * maxShift * edge;
-  let ny = (valueNoise(uv * noiseFreq + vec2f(73.1, 19.7))     * 2.0 - 1.0) * maxShift * edge;
+  let maxShift  = 8.0;
+  let nx = (valueNoise(uv * noiseFreq)                      * 2.0 - 1.0) * maxShift * edge;
+  let ny = (valueNoise(uv * noiseFreq + vec2f(73.1, 19.7))  * 2.0 - 1.0) * maxShift * edge;
 
   return sampleClamped(px + i32(round(nx)), py + i32(round(ny)));
 }
 
 /* ================================================================== */
-/*  Contrast S‑curve (sigmoid)                                        */
+/*  Coastline contrast                                                */
 /*                                                                    */
-/*  Maps 0→0, 0.5→0.5, 1→1 but with a steep mid‑section so values    */
-/*  snap toward black or white.  The steepness parameter controls how */
-/*  aggressive the snap is.                                           */
+/*  Only sharpens the land / sea boundary.  Pixels that are clearly   */
+/*  "terrain" (above a low threshold) pass through with their full    */
+/*  value.  Pixels in the narrow transition band near zero get pushed */
+/*  toward either 0 (sea) or their terrain value (land).              */
+/*  This preserves ALL gray terrain levels.                           */
 /* ================================================================== */
 
-fn contrastCurve(v : f32, steepness : f32) -> f32 {
-  // Attempt a standard sigmoid remap centred at 0.5:
-  //   out = 1 / (1 + exp( ‑steepness * (v ‑ 0.5) ))
-  // Then re‑normalise so 0→0 and 1→1.
-  let raw  = 1.0 / (1.0 + exp(-steepness * (v - 0.5)));
-  let low  = 1.0 / (1.0 + exp(-steepness * (0.0 - 0.5)));
-  let high = 1.0 / (1.0 + exp(-steepness * (1.0 - 0.5)));
-  return (raw - low) / (high - low);
+fn coastlineContrast(v : f32) -> f32 {
+  // Threshold: anything below this is "sea", above is "land".
+  // The smoothstep creates a sharp but smooth step right at the
+  // coastline without affecting terrain values above the band.
+  let coastLow  = 0.03;  // below this → hard black
+  let coastHigh = 0.12;  // above this → fully preserved terrain
+  return v * smoothstep(coastLow, coastHigh, v);
 }
 
 /* ================================================================== */
-/*  Mountain sharpening (unsharp‑mask style)                          */
-/*                                                                    */
-/*  Computes (original ‑ blurred) to get detail, then adds it back    */
-/*  weighted by brightness (so only mountains get sharpened).         */
+/*  Mountain sharpening (unsharp‑mask)                                */
 /* ================================================================== */
 
 fn sharpenMountains(original : f32, blurred : f32) -> f32 {
-  let detail    = original - blurred;
-  // Only sharpen bright areas (mountains).  lerp strength by value.
-  let strength  = smoothstep(0.35, 0.75, original) * 0.6;
+  let detail   = original - blurred;
+  let strength = smoothstep(0.35, 0.75, original) * 0.6;
   return original + detail * strength;
 }
 
@@ -171,24 +158,27 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
   let original = heightmapIn[idx];
 
   // ── Step 1: Gaussian blur ─────────────────────────────────────
+  // Smooths jagged brush edges into cleaner gradients.
   let blurred = gaussianBlur(px, py);
 
-  // ── Step 2: Noise‑perturbed edge sampling ─────────────────────
-  // Blend: mostly blurred, but replace edge regions with perturbed
-  // samples so coastlines get organic contours.
-  let edge = gradientMagnitude(px, py);
+  // ── Step 2: Noise‑perturbed edges ─────────────────────────────
+  // At edge pixels, replace the blurred value with a noise‑shifted
+  // sample so coastlines become organic instead of perfectly round.
+  let edge      = gradientMagnitude(px, py);
   let perturbed = perturbedSample(px, py);
-  // Mix: flat areas get full blur, edge areas get perturbed values.
-  let edgeMix = smoothstep(0.02, 0.15, edge);
-  let smoothed = mix(blurred, perturbed, edgeMix * 0.7);
+  let edgeMix   = smoothstep(0.02, 0.15, edge);
+  let smoothed  = mix(blurred, perturbed, edgeMix * 0.7);
 
   // ── Step 3: Mountain sharpening ───────────────────────────────
+  // Boosts detail on bright (mountain) pixels only.
   let sharpened = sharpenMountains(smoothed, blurred);
 
-  // ── Step 4: Contrast S‑curve push toward B&W ─────────────────
-  let contrasted = contrastCurve(sharpened, 8.0);
+  // ── Step 4: Coastline contrast ────────────────────────────────
+  // Sharpens ONLY the land/sea boundary (near‑zero transition).
+  // All interior terrain (dark gray, mid gray, white) is preserved.
+  let refined = coastlineContrast(sharpened);
 
-  heightmapOut[idx] = clamp(contrasted, 0.0, 1.0);
+  heightmapOut[idx] = clamp(refined, 0.0, 1.0);
 }
 `;
 
