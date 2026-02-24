@@ -247,7 +247,20 @@ export async function runHeightmapCompute(
   const pixelCount = heightmap.length;
   const byteSize = heightmap.byteLength; // pixelCount * 4
 
+  const canvasWidth = hiddenCanvas.width;
+  const canvasHeight = hiddenCanvas.height;
+
   /* ---- 3.  Create GPU buffers ---- */
+
+  // Uniform buffer: { width: u32, height: u32 }  (8 bytes, 16‑byte aligned)
+  const uniformData = new Uint32Array([canvasWidth, canvasHeight]);
+  const uniformBuffer = device.createBuffer({
+    label: "heightmap-params",
+    size: 16, // minimum uniform buffer alignment
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
   const inputBuffer = device.createBuffer({
     label: "heightmap-input",
     size: byteSize,
@@ -271,8 +284,9 @@ export async function runHeightmapCompute(
     label: "heightmap-bind-group",
     layout: bindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: inputBuffer } },
-      { binding: 1, resource: { buffer: outputBuffer } },
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: { buffer: inputBuffer } },
+      { binding: 2, resource: { buffer: outputBuffer } },
     ],
   });
 
@@ -293,8 +307,9 @@ export async function runHeightmapCompute(
   // Wait for GPU to finish
   await device.queue.onSubmittedWorkDone();
 
-  /* ---- 5.  Clean up the input buffer (output stays alive) ---- */
+  /* ---- 5.  Clean up transient buffers (output stays alive) ---- */
   inputBuffer.destroy();
+  uniformBuffer.destroy();
 
   console.log(
     `[HeightmapCompute] Dispatched ${workgroupCount} workgroups ` +
