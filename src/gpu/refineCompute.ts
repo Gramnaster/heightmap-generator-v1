@@ -99,14 +99,36 @@ fn gradientMagnitude(px : i32, py : i32) -> f32 {
   return sqrt(gx * gx + gy * gy);
 }
 
+// Multi‑octave FBM displacement — produces fractal, jagged coastlines
+// rather than smooth single‑frequency wobbles.
+fn fbmDisplace(uv : vec2f, seed : vec2f) -> f32 {
+  var value = 0.0;
+  var amp   = 1.0;
+  var freq  = 1.0;
+  var p     = uv + seed;
+  // 5 octaves: big bays down to tiny inlets
+  for (var i = 0; i < 5; i = i + 1) {
+    value = value + amp * (valueNoise(p * freq) * 2.0 - 1.0);
+    freq  = freq * 2.0;
+    amp   = amp  * 0.5;
+    // rotate per octave to avoid grid alignment
+    p = vec2f(p.x * 0.866 - p.y * 0.5,
+              p.x * 0.5   + p.y * 0.866);
+  }
+  return value;  // range roughly ‑2..+2
+}
+
 fn perturbedSample(px : i32, py : i32) -> f32 {
   let uv = vec2f(f32(px), f32(py)) / vec2f(f32(params.width), f32(params.height));
   let edge = gradientMagnitude(px, py);
 
-  let noiseFreq = 12.0;
-  let maxShift  = 8.0;
-  let nx = (valueNoise(uv * noiseFreq)                      * 2.0 - 1.0) * maxShift * edge;
-  let ny = (valueNoise(uv * noiseFreq + vec2f(73.1, 19.7))  * 2.0 - 1.0) * maxShift * edge;
+  // Fractal displacement: base frequency 8, max shift 24 px at
+  // hard edges — creates realistic jagged coastlines with bays,
+  // peninsulas and inlets at multiple scales.
+  let baseFreq = 8.0;
+  let maxShift = 24.0;
+  let nx = fbmDisplace(uv * baseFreq, vec2f(0.0, 0.0))   * maxShift * edge;
+  let ny = fbmDisplace(uv * baseFreq, vec2f(73.1, 19.7))  * maxShift * edge;
 
   return sampleClamped(px + i32(round(nx)), py + i32(round(ny)));
 }
@@ -136,8 +158,15 @@ fn coastlineContrast(v : f32) -> f32 {
 
 fn sharpenMountains(original : f32, blurred : f32) -> f32 {
   let detail   = original - blurred;
-  let strength = smoothstep(0.35, 0.75, original) * 0.6;
-  return original + detail * strength;
+  // Aggressive sharpening on bright terrain — kicks in earlier
+  // (0.20) and reaches full strength (1.5×) at mountain peaks.
+  let strength = smoothstep(0.20, 0.55, original) * 1.5;
+  let sharpened = original + detail * strength;
+  // Also push mountain contrast: expand the bright range so peaks
+  // separate more clearly from foothills.
+  let mtnBoost = smoothstep(0.40, 0.80, sharpened);
+  let boosted  = mix(sharpened, pow(sharpened, 0.6), mtnBoost * 0.4);
+  return boosted;
 }
 
 /* ================================================================== */
