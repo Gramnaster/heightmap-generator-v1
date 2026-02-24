@@ -130,7 +130,7 @@ export async function runHeightmapCompute(
   });
 
   // Upload the heightmap data
-  device.queue.writeBuffer(inputBuffer, 0, heightmap);
+  device.queue.writeBuffer(inputBuffer, 0, heightmap.buffer);
 
   /* ---- 4.  Create bind group + dispatch ---- */
   const bindGroup = device.createBindGroup({
