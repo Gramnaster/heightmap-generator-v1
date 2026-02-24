@@ -18,9 +18,11 @@ export const terrainVertexShader = /* glsl */ `
     float h = texture2D(uHeightmap, uv).r;
     vHeight = h;
 
-    // Displace along Y (up).
+    // PlaneGeometry lies in XY with normal along +Z.
+    // Displace along the normal (Z) so the mesh rotation
+    // [-PI/2, 0, 0] maps local Z → world Y (up).
     vec3 displaced = position;
-    displaced.y += h * uHeightScale;
+    displaced.z += h * uHeightScale;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
   }
