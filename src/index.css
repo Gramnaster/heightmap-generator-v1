@@ -167,3 +167,13 @@ body,
   height: 100%;
   cursor: crosshair;
 }
+
+/* ---- 3D terrain preview ---- */
+
+.terrain-preview {
+  flex: 1;
+  position: relative;
+  background: #0a0a0a;
+  border-left: 1px solid var(--border);
+  min-width: 300px;
+}

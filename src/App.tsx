@@ -3,7 +3,13 @@ import { Canvas2DEngine } from "./engine/Canvas2DEngine";
 import type { BrushSettings } from "./engine/types";
 import { DrawingCanvas } from "./components/DrawingCanvas";
 import { Toolbar } from "./components/Toolbar";
-import { runHeightmapCompute } from "./gpu";
+import { TerrainPreview } from "./components/TerrainPreview";
+import { runHeightmapCompute, readbackOutputBuffer } from "./gpu";
+
+interface TerrainData {
+  heightData: Float32Array;
+  mapSize: number;
+}
 
 function App() {
   const engine = useMemo(() => new Canvas2DEngine(), []);
@@ -18,6 +24,7 @@ function App() {
   );
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [terrain, setTerrain] = useState<TerrainData | null>(null);
 
   const handleClear = useCallback(() => engine.clear(), [engine]);
 
@@ -26,12 +33,24 @@ function App() {
     try {
       const hiddenCanvas = engine.getHiddenCanvas();
       const result = await runHeightmapCompute(hiddenCanvas);
-      console.log(
-        "[Generate3D] Compute complete.",
-        `Output buffer: ${result.outputBuffer.size} bytes,`,
-        `${result.pixelCount} pixels on GPU.`,
+
+      // Readback compute output to CPU so Three.js (WebGL) can use it.
+      const heightData = await readbackOutputBuffer(
+        result.device,
+        result.outputBuffer,
+        result.pixelCount,
       );
-      // TODO: feed result.outputBuffer into a 3D renderer
+
+      const mapSize = hiddenCanvas.width; // 4096
+      setTerrain({ heightData, mapSize });
+
+      // Free the GPU output buffer now that we have a CPU copy.
+      result.outputBuffer.destroy();
+
+      console.log(
+        "[Generate3D] Terrain ready.",
+        `${result.pixelCount} pixels read back.`,
+      );
     } catch (err) {
       console.error("[Generate3D] Failed:", err);
       alert(err instanceof Error ? err.message : "WebGPU error");
@@ -56,6 +75,13 @@ function App() {
       <main className="canvas-container">
         <DrawingCanvas engine={engine} brush={brush} />
       </main>
+
+      {terrain && (
+        <TerrainPreview
+          heightData={terrain.heightData}
+          mapSize={terrain.mapSize}
+        />
+      )}
     </div>
   );
 }
