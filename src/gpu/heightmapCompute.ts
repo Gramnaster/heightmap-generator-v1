@@ -6,16 +6,22 @@ import { extractHeightmap } from "./extractHeightmap";
 /* ------------------------------------------------------------------ */
 
 /**
- * Terrain‑generation compute shader.
+ * Terrain‑generation compute shader  — v2 "Layered Math" engine.
  *
- * Reads the painted heightmap (0.0–1.0 grayscale) and produces
- * terrain using two noise regimes blended by the painted value:
+ * Reads the painted heightmap (0.0–1.0 grayscale) and processes it
+ * through four geological layers:
  *
- *   • Mid‑gray (≈0.5)  → smooth FBM hills,  clamped to max 0.5
- *   • White    (≈1.0)  → sharp ridged‑noise mountains, scaled by
- *                         the painted value so brighter = taller.
- *
- * Values near black (≈0.0) pass through as‑is (flat ground).
+ *   1. Domain Warp     – distort UVs with noise so brush strokes get
+ *                         organic, tectonic‑style flow lines.
+ *   2. Continental Base – low‑frequency FBM + power‑curve exponent to
+ *                         create vast flat plains with sudden elevation
+ *                         changes  (fixes the "Perlin Pillow" effect).
+ *   3. Mountain Ridges  – ridged multifractal noise applied only where
+ *                         the user painted white, producing sharp peaks
+ *                         instead of round domes.
+ *   4. Final Blend      – smooth interpolation between layers governed
+ *                         by the painted value (black = flat, gray =
+ *                         rolling hills, white = towering mountains).
  *
  * Bindings:
  *   @group(0) @binding(0)  params        – uniform { width, height }
@@ -37,18 +43,24 @@ struct Params {
 /*  Hash / noise primitives                                           */
 /* ================================================================== */
 
-// Fast 2→1 hash (based on Hugo Elias / integer‑noise patterns).
+// 2→1 hash (good distribution, cheap ALU).
 fn hash2(p : vec2f) -> f32 {
   var q = fract(p * vec2f(123.34, 456.21));
   q = q + dot(q, q + 45.32);
   return fract(q.x * q.y);
 }
 
-// Gradient‑style 2D value noise with quintic interpolation.
+// 2→2 hash – needed for domain warping (two independent offsets).
+fn hash22(p : vec2f) -> vec2f {
+  let a = hash2(p);
+  let b = hash2(p + vec2f(37.0, 91.0));
+  return vec2f(a, b);
+}
+
+// 2D value noise with quintic interpolation (C2‑continuous).
 fn valueNoise(p : vec2f) -> f32 {
   let i = floor(p);
   let f = fract(p);
-  // Quintic Hermite curve for smooth second‑derivative continuity.
   let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 
   let a = hash2(i + vec2f(0.0, 0.0));
@@ -60,8 +72,37 @@ fn valueNoise(p : vec2f) -> f32 {
              mix(c, d, u.x), u.y);
 }
 
+// 30°‑rotation matrix applied per‑octave to break grid alignment.
+const ROT : mat2x2f = mat2x2f(
+  vec2f( 0.866, 0.5),
+  vec2f(-0.5,   0.866)
+);
+
 /* ================================================================== */
-/*  FBM – Fractal Brownian Motion  (smooth, rolling hills)            */
+/*  Layer 1 – Domain Warping                                          */
+/*                                                                    */
+/*  Uses noise to bend the UV coordinates before they enter the       */
+/*  terrain generators.  Creates sweeping tectonic curves that make   */
+/*  brush‑stroke edges look geological instead of perfectly round.    */
+/* ================================================================== */
+
+fn domainWarp(p : vec2f) -> vec2f {
+  // Two independent noise lookups (offset seeds to decorrelate).
+  let warpStrength = 0.35;  // how far UVs get pushed (in UV‑space)
+  let warpFreq     = 2.0;   // scale of the warping pattern
+
+  let wx = valueNoise(p * warpFreq)               * 2.0 - 1.0;
+  let wy = valueNoise(p * warpFreq + vec2f(50.0, 50.0)) * 2.0 - 1.0;
+
+  return p + vec2f(wx, wy) * warpStrength;
+}
+
+/* ================================================================== */
+/*  Layer 2 – Continental Base  (FBM + power‑curve)                   */
+/*                                                                    */
+/*  Low‑frequency rolling noise run through pow(val, exponent) so     */
+/*  low areas flatten to near‑zero (plains / ocean beds) while high   */
+/*  areas remain tall (continental shelves / plateaus).                */
 /* ================================================================== */
 
 fn fbm(pos : vec2f, octaves : i32) -> f32 {
@@ -72,43 +113,59 @@ fn fbm(pos : vec2f, octaves : i32) -> f32 {
 
   for (var i = 0; i < octaves; i = i + 1) {
     value = value + amp * valueNoise(p * freq);
-    freq  = freq  * 2.0;
-    amp   = amp   * 0.5;
-    // Rotate slightly each octave to break axis‑alignment.
-    p = vec2f(p.x * 0.866 - p.y * 0.5,
-              p.x * 0.5   + p.y * 0.866);
+    freq  = freq * 2.0;
+    amp   = amp  * 0.5;
+    p     = ROT * p;
   }
   return value;
 }
 
+fn continentalNoise(p : vec2f) -> f32 {
+  // Low‑frequency base (3 octaves — we only want broad shapes).
+  let raw = fbm(p * 1.5, 3);
+  // Power curve: flattens valleys, sharpens elevation transitions.
+  return pow(raw, 2.5);
+}
+
 /* ================================================================== */
-/*  Ridged noise  (sharp peaks, craggy mountains)                     */
+/*  Layer 3 – Mountain Ridges  (ridged multifractal)                  */
+/*                                                                    */
+/*  |noise| flipped + squared creates sharp ridge‑lines.  Octave     */
+/*  weighting feeds the previous signal into the next amplitude,      */
+/*  concentrating detail around existing peaks.                       */
 /* ================================================================== */
 
 fn ridgedNoise(pos : vec2f, octaves : i32) -> f32 {
   var value  = 0.0;
-  var amp    = 0.5;
+  var amp    = 0.6;
   var freq   = 1.0;
   var weight = 1.0;
   var p      = pos;
 
   for (var i = 0; i < octaves; i = i + 1) {
     var n = valueNoise(p * freq);
-    // Fold the noise to create ridges.
+    // Fold to V‑shape, flip to ridge, sharpen.
     n = 1.0 - abs(n * 2.0 - 1.0);
-    // Square it to sharpen the ridges.
     n = n * n;
-    // Weight successive octaves by previous signal.
+    // Weight by previous signal – concentrates detail on ridges.
     n = n * weight;
-    weight = clamp(n, 0.0, 1.0);
+    weight = clamp(n * 1.2, 0.0, 1.0);
 
     value = value + n * amp;
-    freq  = freq * 2.0;
-    amp   = amp  * 0.5;
-    p = vec2f(p.x * 0.866 - p.y * 0.5,
-              p.x * 0.5   + p.y * 0.866);
+    freq  = freq * 2.2;   // slightly non‑integer ratio → less tiling
+    amp   = amp  * 0.45;
+    p     = ROT * p;
   }
   return value;
+}
+
+/* ================================================================== */
+/*  Layer 4 – Detail FBM  (adds small‑scale roughness everywhere)     */
+/* ================================================================== */
+
+fn detailNoise(p : vec2f) -> f32 {
+  // High‑frequency fine detail (4 octaves).
+  return fbm(p * 6.0, 4);
 }
 
 /* ================================================================== */
@@ -127,35 +184,60 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
 
   let idx = py * w + px;
   let painted = heightmapIn[idx];
-  // UV in 0..1, then scale to a nice noise frequency.
-  let uv = vec2f(f32(px), f32(py)) / vec2f(f32(w), f32(params.height));
-  let noiseCoord = uv * 8.0;   // tile frequency – tweak to taste
 
-  // ── Noise evaluation ────────────────────────────────────────────
-  let hillNoise     = fbm(noiseCoord, 6);                 // 0..~1
-  let mountainNoise = ridgedNoise(noiseCoord * 1.2, 6);   // 0..~1
+  // ── UV coordinates ──────────────────────────────────────────────
+  let uv = vec2f(f32(px), f32(py)) / vec2f(f32(w), f32(h));
 
-  // ── Blend zones ─────────────────────────────────────────────────
-  // Black  (0.0) → flat ground, keep near 0.
-  // Mid    (0.5) → rolling hills  (FBM), max height 0.5.
-  // White  (1.0) → towering mountains (ridged × painted).
+  // ── Layer 1: Domain Warp ────────────────────────────────────────
+  // Distort the coordinates so brush edges become organic flow lines.
+  let warped = domainWarp(uv * 8.0);
 
-  // How much "hill" influence (peaks around painted == 0.5).
-  let hillWeight = smoothstep(0.05, 0.35, painted) *
-                   smoothstep(0.95, 0.65, painted);
+  // ── Layer 2: Continental Base ───────────────────────────────────
+  // Broad, flat plains with pow(2.5) curve.  Applied everywhere
+  // the user paints above black.
+  let continental = continentalNoise(warped);
 
-  // How much "mountain" influence (ramps up toward painted == 1.0).
-  let mtnWeight = smoothstep(0.45, 0.85, painted);
+  // ── Layer 3: Mountain Ridges ────────────────────────────────────
+  // Sharp ridged‑multifractal.  Only engaged where painted → white.
+  let ridges = ridgedNoise(warped * 1.3, 7);
 
-  // Hills: FBM scaled so max stays ≤ 0.5.
-  let hillHeight = hillNoise * 0.5;
+  // ── Layer 4: Fine Detail ────────────────────────────────────────
+  // Subtle roughness layered on top of everything.
+  let detail = detailNoise(warped);
 
-  // Mountains: ridged noise scaled by the painted value itself,
-  // so brighter strokes → taller peaks.
-  let mtnHeight = mountainNoise * painted;
+  // ── Blend zones (governed by painted value) ─────────────────────
+  //
+  //  painted ≈ 0.0  →  flat ground (near zero output)
+  //  painted ≈ 0.5  →  rolling continental hills + detail
+  //  painted ≈ 1.0  →  towering ridged mountains + detail
+  //
+  // hillWeight: bell curve peaking at painted ≈ 0.5
+  let hillWeight = smoothstep(0.05, 0.30, painted)
+                 * smoothstep(0.90, 0.55, painted);
 
-  // Blend the two contributions.
-  let height = hillWeight * hillHeight + mtnWeight * mtnHeight;
+  // mtnWeight: ramps in above painted ≈ 0.5
+  let mtnWeight = smoothstep(0.40, 0.80, painted);
+
+  // detailWeight: fades in whenever anything is painted
+  let detailWeight = smoothstep(0.05, 0.25, painted) * 0.06;
+
+  // ── Combine layers ──────────────────────────────────────────────
+  // Continental base: max ≈ 0.4 (after pow‑curve, values are small).
+  let hillHeight = continental * 0.5;
+
+  // Mountains: ridged × painted value — brighter paint = taller.
+  let mtnHeight = ridges * painted;
+
+  // Detail: subtle everywhere there is terrain.
+  let detailHeight = detail;
+
+  var height = hillWeight  * hillHeight
+             + mtnWeight   * mtnHeight
+             + detailWeight * detailHeight;
+
+  // Final power‑curve on the combined result: pushes remaining
+  // low values even flatter while preserving peaks.
+  height = pow(clamp(height, 0.0, 1.0), 1.3);
 
   heightmapOut[idx] = clamp(height, 0.0, 1.0);
 }
