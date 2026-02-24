@@ -5,6 +5,7 @@ import { DrawingCanvas } from "./components/DrawingCanvas";
 import { Toolbar } from "./components/Toolbar";
 import { TerrainPreview } from "./components/TerrainPreview";
 import { runHeightmapCompute, readbackOutputBuffer } from "./gpu";
+import { downloadHeightmap16 } from "./gpu/exportHeightmap";
 
 interface TerrainData {
   heightData: Float32Array;
@@ -27,6 +28,11 @@ function App() {
   const [terrain, setTerrain] = useState<TerrainData | null>(null);
 
   const handleClear = useCallback(() => engine.clear(), [engine]);
+
+  const handleDownload = useCallback(() => {
+    if (!terrain) return;
+    downloadHeightmap16(terrain.heightData, terrain.mapSize, terrain.mapSize);
+  }, [terrain]);
 
   const handleGenerate3D = useCallback(async () => {
     setIsGenerating(true);
@@ -71,6 +77,8 @@ function App() {
         onClear={handleClear}
         onGenerate3D={handleGenerate3D}
         isGenerating={isGenerating}
+        onDownload={handleDownload}
+        hasTerrainData={terrain !== null}
       />
       <main className="canvas-container">
         <DrawingCanvas engine={engine} brush={brush} />

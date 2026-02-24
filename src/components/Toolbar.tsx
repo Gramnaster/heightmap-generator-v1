@@ -8,6 +8,8 @@ interface ToolbarProps {
   onClear: () => void;
   onGenerate3D: () => void;
   isGenerating: boolean;
+  onDownload: () => void;
+  hasTerrainData: boolean;
 }
 
 /**
@@ -25,6 +27,8 @@ export function Toolbar({
   onClear,
   onGenerate3D,
   isGenerating,
+  onDownload,
+  hasTerrainData,
 }: ToolbarProps) {
   const grayHex = brushColor.toString(16).padStart(2, "0");
   const swatchColor = `#${grayHex}${grayHex}${grayHex}`;
@@ -89,6 +93,13 @@ export function Toolbar({
         disabled={isGenerating}
       >
         {isGenerating ? "Generating…" : "Generate 3D"}
+      </button>
+      <button
+        className="toolbar-btn"
+        onClick={onDownload}
+        disabled={!hasTerrainData}
+      >
+        Download 16‑bit PNG
       </button>
     </aside>
   );
