@@ -146,6 +146,17 @@ body,
   background: #4a8ac4;
 }
 
+.toolbar-btn--secondary {
+  background: #3a6040;
+  color: #fff;
+  border-color: #3a6040;
+  font-weight: 600;
+}
+
+.toolbar-btn--secondary:hover {
+  background: #4a7a50;
+}
+
 .toolbar-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

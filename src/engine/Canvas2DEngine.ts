@@ -121,6 +121,29 @@ export class Canvas2DEngine implements IDrawingEngine {
     return this.hiddenCanvas;
   }
 
+  /**
+   * Write a Float32Array (one float per pixel, 0.0–1.0) back to the
+   * hidden canvas as grayscale pixels, then refresh the viewport.
+   */
+  writeBack(data: Float32Array): void {
+    const w = CANVAS_SIZE;
+    const h = CANVAS_SIZE;
+    const imageData = this.hiddenCtx.createImageData(w, h);
+    const rgba = imageData.data;
+
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.round(Math.max(0, Math.min(1, data[i])) * 255);
+      const off = i * 4;
+      rgba[off]     = v; // R
+      rgba[off + 1] = v; // G
+      rgba[off + 2] = v; // B
+      rgba[off + 3] = 255; // A
+    }
+
+    this.hiddenCtx.putImageData(imageData, 0, 0);
+    this.renderViewport();
+  }
+
   dispose(): void {
     this.viewportCanvas = null;
     this.viewportCtx = null;

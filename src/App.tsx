@@ -6,6 +6,7 @@ import { Toolbar } from "./components/Toolbar";
 import { TerrainPreview } from "./components/TerrainPreview";
 import { runHeightmapCompute, readbackOutputBuffer } from "./gpu";
 import { downloadHeightmap16 } from "./gpu/exportHeightmap";
+import { runRefineCompute } from "./gpu/refineCompute";
 
 interface TerrainData {
   heightData: Float32Array;
@@ -25,9 +26,25 @@ function App() {
   );
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isRefining, setIsRefining] = useState(false);
   const [terrain, setTerrain] = useState<TerrainData | null>(null);
 
   const handleClear = useCallback(() => engine.clear(), [engine]);
+
+  const handleRefine = useCallback(async () => {
+    setIsRefining(true);
+    try {
+      const hiddenCanvas = engine.getHiddenCanvas();
+      const refined = await runRefineCompute(hiddenCanvas);
+      engine.writeBack(refined);
+      console.log("[Refine] Canvas updated with refined terrain.");
+    } catch (err) {
+      console.error("[Refine] Failed:", err);
+      alert(err instanceof Error ? err.message : "WebGPU refine error");
+    } finally {
+      setIsRefining(false);
+    }
+  }, [engine]);
 
   const handleDownload = useCallback(() => {
     if (!terrain) return;
@@ -75,6 +92,8 @@ function App() {
         brushColor={brushColor}
         setBrushColor={setBrushColor}
         onClear={handleClear}
+        onRefine={handleRefine}
+        isRefining={isRefining}
         onGenerate3D={handleGenerate3D}
         isGenerating={isGenerating}
         onDownload={handleDownload}

@@ -6,6 +6,8 @@ interface ToolbarProps {
   brushColor: number;
   setBrushColor: (v: number) => void;
   onClear: () => void;
+  onRefine: () => void;
+  isRefining: boolean;
   onGenerate3D: () => void;
   isGenerating: boolean;
   onDownload: () => void;
@@ -25,6 +27,8 @@ export function Toolbar({
   brushColor,
   setBrushColor,
   onClear,
+  onRefine,
+  isRefining,
   onGenerate3D,
   isGenerating,
   onDownload,
@@ -86,6 +90,13 @@ export function Toolbar({
       <hr className="toolbar-divider" />
       <button className="toolbar-btn" onClick={onClear}>
         Clear Canvas
+      </button>
+      <button
+        className="toolbar-btn toolbar-btn--secondary"
+        onClick={onRefine}
+        disabled={isRefining}
+      >
+        {isRefining ? "Refining…" : "Refine Terrain"}
       </button>
       <button
         className="toolbar-btn toolbar-btn--primary"
